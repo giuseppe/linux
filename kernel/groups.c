@@ -55,11 +55,10 @@ static int groups_to_user(gid_t __user *grouplist,
 
 /* fill a group_info from a user-space array - it must be allocated already */
 static int groups_from_user(struct group_info *group_info,
-    gid_t __user *grouplist)
+    gid_t __user *grouplist, int count)
 {
 	struct user_namespace *user_ns = current_user_ns();
 	int i;
-	unsigned int count = group_info->ngroups;
 
 	for (i = 0; i < count; i++) {
 		gid_t gid;
@@ -186,12 +185,21 @@ out:
 	return i;
 }
 
-bool may_setgroups(void)
+bool may_setgroups(struct group_info *group_info, struct group_info **shadowed_groups)
 {
 	struct user_namespace *user_ns = current_user_ns();
-
 	return ns_capable(user_ns, CAP_SETGID) &&
-		userns_may_setgroups(user_ns);
+		userns_may_setgroups(user_ns, group_info, shadowed_groups);
+}
+
+void add_shadowed_groups(struct group_info *group_info, struct group_info *shadowed)
+{
+	int i, j;
+	for (i = 0; i < shadowed->ngroups; i++) {
+		kgid_t kgid = GROUP_AT(shadowed, i);
+		j = group_info->ngroups - i - 1;
+		GROUP_AT(group_info, j) = kgid;
+	}
 }
 
 /*
@@ -202,24 +210,42 @@ bool may_setgroups(void)
 SYSCALL_DEFINE2(setgroups, int, gidsetsize, gid_t __user *, grouplist)
 {
 	struct group_info *group_info;
+	struct group_info *shadowed_groups = NULL;
 	int retval;
-
-	if (!may_setgroups())
-		return -EPERM;
-	if ((unsigned)gidsetsize > NGROUPS_MAX)
+	unsigned int arraysize = gidsetsize;
+	if (arraysize > NGROUPS_MAX)
 		return -EINVAL;
 
-	group_info = groups_alloc(gidsetsize);
+	if (!may_setgroups(group_info, &shadowed_groups))
+		return -EPERM;
+
+	if (shadowed_groups) {
+		if (shadowed_groups->ngroups + gidsetsize > NGROUPS_MAX) {
+			put_group_info(shadowed_groups);
+			return -EINVAL;
+		}
+		arraysize += shadowed_groups->ngroups;
+	}
+
+	group_info = groups_alloc(arraysize);
 	if (!group_info)
 		return -ENOMEM;
-	retval = groups_from_user(group_info, grouplist);
+
+	retval = groups_from_user(group_info, grouplist, gidsetsize);
 	if (retval) {
+		if (shadowed_groups)
+			put_group_info(shadowed_groups);
 		put_group_info(group_info);
 		return retval;
 	}
 
+        if (shadowed_groups)
+		add_shadowed_groups(group_info, shadowed_groups);
+
 	retval = set_current_groups(group_info);
 	put_group_info(group_info);
+	if (shadowed_groups)
+		put_group_info(shadowed_groups);
 
 	return retval;
 }

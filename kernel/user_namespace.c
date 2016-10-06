@@ -124,6 +124,7 @@ int create_user_ns(struct cred *new)
 		ns->ucount_max[i] = INT_MAX;
 	}
 	ns->ucounts = ucounts;
+	ns->shadow_group_info = get_current_groups();
 
 	/* Inherit USERNS_SETGROUPS_ALLOWED from our parent */
 	mutex_lock(&userns_state_mutex);
@@ -176,6 +177,9 @@ static void free_user_ns(struct work_struct *work)
 {
 	struct user_namespace *parent, *ns =
 		container_of(work, struct user_namespace, work);
+
+	if (ns->shadow_group_info)
+          put_group_info(ns->shadow_group_info);
 
 	do {
 		struct ucounts *ucounts = ns->ucounts;
@@ -897,7 +901,8 @@ int proc_setgroups_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "%s\n",
 		   (userns_flags & USERNS_SETGROUPS_ALLOWED) ?
-		   "allow" : "deny");
+		   ((userns_flags & USERNS_SETGROUPS_SHADOW) ? "shadow" : "allow")
+		   : "deny");
 	return 0;
 }
 
@@ -908,6 +913,7 @@ ssize_t proc_setgroups_write(struct file *file, const char __user *buf,
 	struct user_namespace *ns = seq->private;
 	char kbuf[8], *pos;
 	bool setgroups_allowed;
+	bool setgroups_shadow = false;
 	ssize_t ret;
 
 	/* Only allow a very narrow range of strings to be written */
@@ -927,6 +933,11 @@ ssize_t proc_setgroups_write(struct file *file, const char __user *buf,
 	if (strncmp(pos, "allow", 5) == 0) {
 		pos += 5;
 		setgroups_allowed = true;
+	}
+	else if (strncmp(pos, "shadow", 6) == 0) {
+		pos += 6;
+		setgroups_allowed = true;
+		setgroups_shadow = true;
 	}
 	else if (strncmp(pos, "deny", 4) == 0) {
 		pos += 4;
@@ -948,6 +959,13 @@ ssize_t proc_setgroups_write(struct file *file, const char __user *buf,
 		 */
 		if (!(ns->flags & USERNS_SETGROUPS_ALLOWED))
 			goto out_unlock;
+
+		if (setgroups_shadow)
+			ns->flags |= USERNS_SETGROUPS_SHADOW;
+		else {
+			put_group_info(ns->shadow_group_info);
+			ns->shadow_group_info = NULL;
+		}
 	} else {
 		/* Permanently disabling setgroups after setgroups has
 		 * been enabled by writing the gid_map is not allowed.
@@ -968,9 +986,11 @@ out_unlock:
 	goto out;
 }
 
-bool userns_may_setgroups(const struct user_namespace *ns)
+bool userns_may_setgroups(const struct user_namespace *ns, struct group_info *groups_from_user,
+			 struct group_info **shadowed_groups)
 {
 	bool allowed;
+	struct group_info *shadowed = NULL;
 
 	mutex_lock(&userns_state_mutex);
 	/* It is not safe to use setgroups until a gid mapping in
@@ -979,7 +999,12 @@ bool userns_may_setgroups(const struct user_namespace *ns)
 	allowed = ns->gid_map.nr_extents != 0;
 	/* Is setgroups allowed? */
 	allowed = allowed && (ns->flags & USERNS_SETGROUPS_ALLOWED);
+	if (allowed && (ns->flags & USERNS_SETGROUPS_SHADOW))
+		shadowed = get_group_info(ns->shadow_group_info);
+
 	mutex_unlock(&userns_state_mutex);
+
+	*shadowed_groups = shadowed;
 
 	return allowed;
 }

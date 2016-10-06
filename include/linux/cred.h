@@ -81,7 +81,8 @@ static inline int in_egroup_p(kgid_t grp)
 extern int set_current_groups(struct group_info *);
 extern void set_groups(struct cred *, struct group_info *);
 extern int groups_search(const struct group_info *, kgid_t);
-extern bool may_setgroups(void);
+extern bool may_setgroups(struct group_info *, struct group_info **);
+extern void add_shadowed_groups(struct group_info *, struct group_info *);
 
 /*
  * The security context of a task
