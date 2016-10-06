@@ -32,6 +32,7 @@ struct uid_gid_map { /* 64 bytes -- 1 cache line */
 };
 
 #define USERNS_SETGROUPS_ALLOWED 1UL
+#define USERNS_SETGROUPS_SHADOW  2UL
 
 #define USERNS_INIT_FLAGS USERNS_SETGROUPS_ALLOWED
 
@@ -71,6 +72,11 @@ struct user_namespace {
 	 * in its effective capability set at the child ns creation time. */
 	bool			parent_could_setfcap;
 
+	/* Supplementary groups when setgroups "shadow" mode is enabled.   */
+	struct group_info *shadow_group_info;
+
+	/* Set of groups when the userns is created.   */
+	struct group_info *groups_at_creation;
 #ifdef CONFIG_KEYS
 	/* List of joinable keyrings in this namespace.  Modification access of
 	 * these pointers is controlled by keyring_sem.  Once
@@ -138,7 +144,15 @@ extern ssize_t proc_gid_map_write(struct file *, const char __user *, size_t, lo
 extern ssize_t proc_projid_map_write(struct file *, const char __user *, size_t, loff_t *);
 extern ssize_t proc_setgroups_write(struct file *, const char __user *, size_t, loff_t *);
 extern int proc_setgroups_show(struct seq_file *m, void *v);
-extern bool userns_may_setgroups(const struct user_namespace *ns);
+
+/**
+ * userns_may_setgroups - Check whether the userns allows setgroups(2)
+ * @shadowed_groups: Set of shadow groups.
+ *
+ * This gets a reference to a set of shadow groups.
+ */
+extern bool userns_may_setgroups(const struct user_namespace *ns,
+				 struct group_info **shadowed_groups);
 extern bool in_userns(const struct user_namespace *ancestor,
 		       const struct user_namespace *child);
 extern bool current_in_userns(const struct user_namespace *target_ns);
@@ -167,8 +181,10 @@ static inline void put_user_ns(struct user_namespace *ns)
 {
 }
 
-static inline bool userns_may_setgroups(const struct user_namespace *ns)
+static inline bool userns_may_setgroups(const struct user_namespace *ns,
+					struct group_info **shadowed_groups)
 {
+	*shadowed_groups = NULL;
 	return true;
 }
 
