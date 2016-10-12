@@ -38,19 +38,27 @@ EXPORT_SYMBOL(groups_free);
 
 /* export the group_info to a user-space array */
 static int groups_to_user(gid_t __user *grouplist,
-			  const struct group_info *group_info)
+			  const struct group_info *group_info,
+			  int gidsetsize)
 {
 	struct user_namespace *user_ns = current_user_ns();
-	int i;
+	int i, ngroups = 0;
 	unsigned int count = group_info->ngroups;
 
 	for (i = 0; i < count; i++) {
 		gid_t gid;
-		gid = from_kgid_munged(user_ns, group_info->gid[i]);
-		if (put_user(gid, grouplist+i))
-			return -EFAULT;
+		gid = from_kgid(user_ns, group_info->gid[i]);
+		if (gid == (gid_t) -1)
+			continue;
+		if (gidsetsize) {
+			if (ngroups == gidsetsize)
+				return -EINVAL;
+			if (put_user(gid, grouplist + ngroups))
+				return -EFAULT;
+		}
+		ngroups++;
 	}
-	return 0;
+	return ngroups;
 }
 
 /* fill a group_info from a user-space array - it must be allocated already */
@@ -163,26 +171,13 @@ EXPORT_SYMBOL(set_current_groups);
 
 SYSCALL_DEFINE2(getgroups, int, gidsetsize, gid_t __user *, grouplist)
 {
+	/* no need to grab task_lock here; it cannot change */
 	const struct cred *cred = current_cred();
-	int i;
 
 	if (gidsetsize < 0)
 		return -EINVAL;
 
-	/* no need to grab task_lock here; it cannot change */
-	i = cred->group_info->ngroups;
-	if (gidsetsize) {
-		if (i > gidsetsize) {
-			i = -EINVAL;
-			goto out;
-		}
-		if (groups_to_user(grouplist, cred->group_info)) {
-			i = -EFAULT;
-			goto out;
-		}
-	}
-out:
-	return i;
+	return groups_to_user(grouplist, cred->group_info, gidsetsize);
 }
 
 bool may_setgroups(struct group_info *group_info, struct group_info **shadowed_groups)
