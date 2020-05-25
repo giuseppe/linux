@@ -418,6 +418,10 @@ static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	struct fd real;
 	const struct cred *old_cred;
 	int ret;
+	struct ovl_fs *ofs = OVL_FS(file_inode(file)->i_sb);
+
+	if (ofs->config.nosync)
+		return 0;
 
 	ret = ovl_real_fdget_meta(file, &real, !datasync);
 	if (ret)
