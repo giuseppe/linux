@@ -313,6 +313,55 @@ static u32 map_id_down(struct uid_gid_map *map, u32 id)
 }
 
 /**
+ * find_and_split_extent_down - Find lower_first for the target extent
+ * using the specified map.
+ * If the extent doesn't fit in a single lower extent, split target and
+ * write the remaining IDs (first and count) to the overflow extent.
+ * If no overflow happens, overflow->count is set to 0.
+ */
+static int find_and_split_extent_down(struct uid_gid_map *map,
+				       struct uid_gid_extent *target,
+				       struct uid_gid_extent *overflow)
+{
+	unsigned int extents = map->nr_extents;
+	u32 lower_first = target->lower_first;
+	struct uid_gid_extent *extent;
+	u32 off, available;
+
+	overflow->count = 0;
+
+	/* Find the lower extent that includes the first ID.  */
+	if (extents <= UID_GID_MAP_MAX_BASE_EXTENTS)
+		extent = map_id_range_down_base(extents, map, lower_first, 1);
+	else
+		extent = map_id_range_down_max(extents, map, lower_first, 1);
+
+	/* Could not map the first ID in the extent.  */
+	if (extent == NULL)
+		return -EPERM;
+
+	/* Offset of lower_first in the lower extent.  */
+	off = target->lower_first - extent->first;
+
+	/* How many IDs are available in the lower extent?  */
+	available = extent->count - off;
+
+	/* Requesting more IDs than available in the lower extent.  */
+	if (target->count > available) {
+		/* Move the remaining IDs to the overflow extent.  */
+		overflow->first = target->first + available;
+		overflow->lower_first = target->lower_first + available;
+		overflow->count = target->count - available;
+
+		/* Shrink the initial extent to what is available.  */
+		target->count = available;
+	}
+
+	target->lower_first = extent->lower_first + off;
+	return 0;
+}
+
+/**
  * map_id_up_base - Find idmap via binary search in static extent array.
  * Can only be called if number of mappings is equal or less than
  * UID_GID_MAP_MAX_BASE_EXTENTS.
@@ -749,6 +798,7 @@ static bool mappings_overlap(struct uid_gid_map *new_map,
  * insert_extent - Safely insert a new idmap extent into struct uid_gid_map.
  * Takes care to allocate a 4K block of memory if the number of mappings exceeds
  * UID_GID_MAP_MAX_BASE_EXTENTS.
+ * The extent is appended at the position map->nr_extents.
  */
 static int insert_extent(struct uid_gid_map *map, struct uid_gid_extent *extent)
 {
@@ -968,30 +1018,37 @@ static ssize_t map_write(struct file *file, const char __user *buf,
 	if (!new_idmap_permitted(file, ns, cap_setid, &new_map))
 		goto out;
 
-	ret = -EPERM;
 	/* Map the lower ids from the parent user namespace to the
 	 * kernel global id space.
 	 */
 	for (idx = 0; idx < new_map.nr_extents; idx++) {
+		struct uid_gid_extent overflow;
 		struct uid_gid_extent *e;
-		u32 lower_first;
 
 		if (new_map.nr_extents <= UID_GID_MAP_MAX_BASE_EXTENTS)
 			e = &new_map.extent[idx];
 		else
 			e = &new_map.forward[idx];
 
-		lower_first = map_id_range_down(parent_map,
-						e->lower_first,
-						e->count);
-
-		/* Fail if we can not map the specified extent to
-		 * the kernel global id space.
-		 */
-		if (lower_first == (u32) -1)
+		ret = find_and_split_extent_down(parent_map, e, &overflow);
+		if (ret < 0)
 			goto out;
 
-		e->lower_first = lower_first;
+		/* If the extent doesn't fit in a single lower extent,
+		 * move what could not be mapped to a new extent.
+		 * The new extent is appended to the existing ones in
+		 * new_map, it will be checked again and if necessary it
+		 * is split further.
+		 */
+		if (overflow.count > 0) {
+			if (new_map.nr_extents == UID_GID_MAP_MAX_EXTENTS) {
+				ret = -EINVAL;
+				goto out;
+			}
+			ret = insert_extent(&new_map, &overflow);
+			if (ret < 0)
+				goto out;
+		}
 	}
 
 	/*
