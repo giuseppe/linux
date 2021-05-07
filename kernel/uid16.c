@@ -112,21 +112,45 @@ SYSCALL_DEFINE1(setfsgid16, old_gid_t, gid)
 }
 
 static int groups16_to_user(old_gid_t __user *grouplist,
-    struct group_info *group_info)
+			    struct group_info *group_info,
+			    int gidsetsize)
 {
 	struct user_namespace *user_ns = current_user_ns();
-	int i;
-	old_gid_t group;
-	kgid_t kgid;
+	struct group_info *shadowed_groups = NULL;
+	unsigned int count = group_info->ngroups;
+	int ret, i, ngroups = 0;
 
-	for (i = 0; i < group_info->ngroups; i++) {
-		kgid = group_info->gid[i];
-		group = high2lowgid(from_kgid_munged(user_ns, kgid));
-		if (put_user(group, grouplist+i))
-			return -EFAULT;
+	/* retrieve the set of shadow groups */
+	userns_may_setgroups(user_ns, &shadowed_groups);
+
+	for (i = 0; i < count; i++) {
+		kgid_t kgid = group_info->gid[i];
+		gid_t gid;
+		old_gid_t group;
+
+		gid = from_kgid(user_ns, kgid);
+		if (gid == (gid_t)-1) {
+			/* if it is a shadow group, ignore it */
+			if (groups_search(shadowed_groups, kgid))
+				continue;
+			gid = overflowgid;
+		}
+		group = high2lowgid(gid);
+		if (gidsetsize) {
+			ret = -EINVAL;
+			if (ngroups == gidsetsize)
+				goto out;
+			ret = -EFAULT;
+			if (put_user(group, grouplist + ngroups))
+				goto out;
+		}
+		ngroups++;
 	}
-
-	return 0;
+	ret = ngroups;
+out:
+	if (shadowed_groups)
+		put_group_info(shadowed_groups);
+	return ret;
 }
 
 static int groups16_from_user(struct group_info *group_info,
@@ -153,25 +177,13 @@ static int groups16_from_user(struct group_info *group_info,
 
 SYSCALL_DEFINE2(getgroups16, int, gidsetsize, old_gid_t __user *, grouplist)
 {
+	/* no need to grab task_lock here; it cannot change */
 	const struct cred *cred = current_cred();
-	int i;
 
 	if (gidsetsize < 0)
 		return -EINVAL;
 
-	i = cred->group_info->ngroups;
-	if (gidsetsize) {
-		if (i > gidsetsize) {
-			i = -EINVAL;
-			goto out;
-		}
-		if (groups16_to_user(grouplist, cred->group_info)) {
-			i = -EFAULT;
-			goto out;
-		}
-	}
-out:
-	return i;
+	return groups16_to_user(grouplist, cred->group_info, gidsetsize);
 }
 
 SYSCALL_DEFINE2(setgroups16, int, gidsetsize, old_gid_t __user *, grouplist)
