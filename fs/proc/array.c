@@ -153,12 +153,16 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 				struct pid *pid, struct task_struct *p)
 {
 	struct user_namespace *user_ns = seq_user_ns(m);
+	struct group_info *shadowed_groups = NULL;
 	struct group_info *group_info;
 	int g, umask = -1;
 	struct task_struct *tracer;
 	const struct cred *cred;
 	pid_t ppid, tpid = 0, tgid, ngid;
 	unsigned int max_fds = 0;
+
+	/* retrieve the set of shadow groups */
+	userns_may_setgroups(user_ns, &shadowed_groups);
 
 	rcu_read_lock();
 	ppid = pid_alive(p) ?
@@ -202,9 +206,19 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 
 	seq_puts(m, "\nGroups:\t");
 	group_info = cred->group_info;
-	for (g = 0; g < group_info->ngroups; g++)
+	for (g = 0; g < group_info->ngroups; g++) {
+		kgid_t kgid = group_info->gid[g];
+		gid_t gid = from_kgid(user_ns, kgid);
+
+		if (gid == (gid_t)-1) {
+			/* if it is a shadow group, ignore it */
+			if (groups_search(shadowed_groups, kgid))
+				continue;
+			gid = overflowgid;
+		}
 		seq_put_decimal_ull(m, g ? " " : "",
-				from_kgid_munged(user_ns, group_info->gid[g]));
+				gid);
+	}
 	put_cred(cred);
 	/* Trailing space shouldn't have been added in the first place. */
 	seq_putc(m, ' ');
@@ -224,6 +238,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 		seq_put_decimal_ull(m, "\t", task_session_nr_ns(p, pid->numbers[g].ns));
 #endif
 	seq_putc(m, '\n');
+
+	if (shadowed_groups)
+		put_group_info(shadowed_groups);
+
 }
 
 void render_sigset_t(struct seq_file *m, const char *header,
