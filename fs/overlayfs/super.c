@@ -16,6 +16,7 @@
 #include <linux/posix_acl_xattr.h>
 #include <linux/exportfs.h>
 #include "overlayfs.h"
+#include "cfs.h"
 
 MODULE_AUTHOR("Miklos Szeredi <miklos@szeredi.hu>");
 MODULE_DESCRIPTION("Overlay filesystem");
@@ -122,9 +123,11 @@ static int ovl_revalidate_real(struct dentry *d, unsigned int flags, bool weak)
 
 	if (weak) {
 		if (d->d_flags & DCACHE_OP_WEAK_REVALIDATE)
-			ret =  d->d_op->d_weak_revalidate(d, flags);
+			ret = d->d_op->d_weak_revalidate(d, flags);
+
 	} else if (d->d_flags & DCACHE_OP_REVALIDATE) {
 		ret = d->d_op->d_revalidate(d, flags);
+
 		if (!ret) {
 			if (!(flags & LOOKUP_RCU))
 				d_invalidate(d);
@@ -147,8 +150,9 @@ static int ovl_dentry_revalidate_common(struct dentry *dentry,
 		ret = ovl_revalidate_real(upper, flags, weak);
 
 	for (i = 0; ret > 0 && i < oe->numlower; i++) {
-		ret = ovl_revalidate_real(oe->lowerstack[i].dentry, flags,
-					  weak);
+		if (oe->lowerstack[i].dentry)
+			ret = ovl_revalidate_real(oe->lowerstack[i].dentry, flags,
+						  weak);
 	}
 	return ret;
 }
@@ -232,7 +236,8 @@ static void ovl_free_fs(struct ovl_fs *ofs)
 	/* Hack!  Reuse ofs->layers as a vfsmount array before freeing it */
 	mounts = (struct vfsmount **) ofs->layers;
 	for (i = 0; i < ofs->numlayer; i++) {
-		iput(ofs->layers[i].trap);
+		if (ofs->layers[i].trap)
+			iput(ofs->layers[i].trap);
 		mounts[i] = ofs->layers[i].mnt;
 	}
 	kern_unmount_array(mounts, ofs->numlayer);
@@ -245,6 +250,7 @@ static void ovl_free_fs(struct ovl_fs *ofs)
 	kfree(ofs->config.upperdir);
 	kfree(ofs->config.workdir);
 	kfree(ofs->config.redirect_mode);
+	kfree(ofs->config.base_path);
 	if (ofs->creator_cred)
 		put_cred(ofs->creator_cred);
 	kfree(ofs);
@@ -357,7 +363,10 @@ static int ovl_show_options(struct seq_file *m, struct dentry *dentry)
 	struct super_block *sb = dentry->d_sb;
 	struct ovl_fs *ofs = sb->s_fs_info;
 
-	seq_show_option(m, "lowerdir", ofs->config.lowerdir);
+	if (ofs->config.base_path)
+		seq_show_option(m, "basedir", ofs->config.base_path);
+	if (ofs->config.lowerdir)
+		seq_show_option(m, "lowerdir", ofs->config.lowerdir);
 	if (ofs->config.upperdir) {
 		seq_show_option(m, "upperdir", ofs->config.upperdir);
 		seq_show_option(m, "workdir", ofs->config.workdir);
@@ -1517,7 +1526,8 @@ out:
 }
 
 static int ovl_get_indexdir(struct super_block *sb, struct ovl_fs *ofs,
-			    struct ovl_entry *oe, struct path *upperpath)
+			    struct ovl_entry *oe, struct path *upperpath,
+			    const char *lower)
 {
 	struct vfsmount *mnt = ovl_upper_mnt(ofs);
 	struct dentry *indexdir;
@@ -1527,12 +1537,14 @@ static int ovl_get_indexdir(struct super_block *sb, struct ovl_fs *ofs,
 	if (err)
 		return err;
 
-	/* Verify lower root is upper root origin */
-	err = ovl_verify_origin(ofs, upperpath->dentry,
-				oe->lowerstack[0].dentry, true);
-	if (err) {
-		pr_err("failed to verify upper root origin\n");
-		goto out;
+	if (lower[0] != '@') {
+		/* Verify lower root is upper root origin */
+		err = ovl_verify_origin(ofs, upperpath->dentry,
+					oe->lowerstack[0].dentry, true);
+		if (err) {
+			pr_err("failed to verify upper root origin\n");
+			goto out;
+		}
 	}
 
 	/* index dir will act also as workdir */
@@ -1668,7 +1680,7 @@ static int ovl_get_fsid(struct ovl_fs *ofs, const struct path *path)
 
 static int ovl_get_layers(struct super_block *sb, struct ovl_fs *ofs,
 			  struct path *stack, unsigned int numlower,
-			  struct ovl_layer *layers)
+			  struct ovl_layer *layers, const char *lower)
 {
 	int err;
 	unsigned int i;
@@ -1702,6 +1714,50 @@ static int ovl_get_layers(struct super_block *sb, struct ovl_fs *ofs,
 		struct vfsmount *mnt;
 		struct inode *trap;
 		int fsid;
+
+		if (lower[0] == '@') {
+			struct vfsmount *mnt;
+			char *data;
+			char *base_path;
+
+			base_path = strchr(lower + 1, '@');
+
+			if (base_path)
+				*base_path = '\0';
+			data = kasprintf(GFP_KERNEL, "descriptor=%s,basedir=%s",
+					 lower + 1,
+					 base_path ? base_path + 1 : "/");
+			if (base_path)
+				*base_path = '@';
+
+			err = -ENOMEM;
+			if (!data)
+				goto out;
+
+			mnt = cfs_mount(data);
+			kfree(data);
+
+			err = PTR_ERR(mnt);
+			if (IS_ERR(mnt)) {
+				pr_err("failed to mount compose: %d\n", err);
+				goto out;
+			}
+
+			/*
+			 * Make lower layers R/O.  That way fchmod/fchown on lower file
+			 * will fail instead of modifying lower fs.
+			 */
+			mnt->mnt_flags |= MNT_READONLY | MNT_NOATIME;
+
+			layers[ofs->numlayer].trap = NULL;
+			layers[ofs->numlayer].mnt = mnt;
+			layers[ofs->numlayer].idx = ofs->numlayer;
+			layers[ofs->numlayer].fsid = fsid;
+			layers[ofs->numlayer].fs = &ofs->fs[fsid];
+
+			ofs->numlayer++;
+			goto next;
+		}
 
 		err = fsid = ovl_get_fsid(ofs, &stack[i]);
 		if (err < 0)
@@ -1747,6 +1803,9 @@ static int ovl_get_layers(struct super_block *sb, struct ovl_fs *ofs,
 		layers[ofs->numlayer].fs = &ofs->fs[fsid];
 		ofs->numlayer++;
 		ofs->fs[fsid].is_lower = true;
+
+next:
+		lower = strchr(lower, '\0') + 1;
 	}
 
 	/*
@@ -1788,11 +1847,13 @@ out:
 
 static struct ovl_entry *ovl_get_lowerstack(struct super_block *sb,
 				const char *lower, unsigned int numlower,
-				struct ovl_fs *ofs, struct ovl_layer *layers)
+			        struct ovl_fs *ofs, struct ovl_layer *layers,
+				void *data)
 {
 	int err;
 	struct path *stack = NULL;
 	unsigned int i;
+	const char *it = lower;
 	struct ovl_entry *oe;
 
 	if (!ofs->config.upperdir && numlower == 1) {
@@ -1806,11 +1867,14 @@ static struct ovl_entry *ovl_get_lowerstack(struct super_block *sb,
 
 	err = -EINVAL;
 	for (i = 0; i < numlower; i++) {
-		err = ovl_lower_dir(lower, &stack[i], ofs, &sb->s_stack_depth);
-		if (err)
-			goto out_err;
+		if (it[0] != '@') {
+			err = ovl_lower_dir(it, &stack[i], ofs,
+					    &sb->s_stack_depth);
+			if (err)
+				goto out_err;
+		}
 
-		lower = strchr(lower, '\0') + 1;
+		it = strchr(it, '\0') + 1;
 	}
 
 	err = -EINVAL;
@@ -1820,7 +1884,7 @@ static struct ovl_entry *ovl_get_lowerstack(struct super_block *sb,
 		goto out_err;
 	}
 
-	err = ovl_get_layers(sb, ofs, stack, numlower, layers);
+	err = ovl_get_layers(sb, ofs, stack, numlower, layers, lower);
 	if (err)
 		goto out_err;
 
@@ -1830,13 +1894,20 @@ static struct ovl_entry *ovl_get_lowerstack(struct super_block *sb,
 		goto out_err;
 
 	for (i = 0; i < numlower; i++) {
-		oe->lowerstack[i].dentry = dget(stack[i].dentry);
+		if (stack[i].dentry)
+			oe->lowerstack[i].dentry = dget(stack[i].dentry);
+		else {
+			oe->lowerstack[i].dentry = dget(ofs->layers[i+1].mnt->mnt_root);
+
+		}
 		oe->lowerstack[i].layer = &ofs->layers[i+1];
 	}
 
 out:
-	for (i = 0; i < numlower; i++)
-		path_put(&stack[i]);
+	for (i = 0; i < numlower; i++) {
+		if (stack[i].dentry)
+			path_put(&stack[i]);
+	}
 	kfree(stack);
 
 	return oe;
@@ -1924,9 +1995,9 @@ static struct dentry *ovl_get_root(struct super_block *sb,
 				   struct ovl_entry *oe)
 {
 	struct dentry *root;
-	struct ovl_path *lowerpath = &oe->lowerstack[0];
-	unsigned long ino = d_inode(lowerpath->dentry)->i_ino;
-	int fsid = lowerpath->layer->fsid;
+	struct ovl_path *lowerpath = oe->numlower ? &oe->lowerstack[0] : NULL;
+	unsigned long ino = lowerpath ? d_inode(lowerpath->dentry)->i_ino : 0;
+	int fsid = lowerpath ? lowerpath->layer->fsid : 0;
 	struct ovl_inode_params oip = {
 		.upperdentry = upperdentry,
 		.lowerpath = lowerpath,
@@ -2074,7 +2145,9 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 		sb->s_stack_depth = upper_sb->s_stack_depth;
 		sb->s_time_gran = upper_sb->s_time_gran;
 	}
-	oe = ovl_get_lowerstack(sb, splitlower, numlower, ofs, layers);
+
+	oe = ovl_get_lowerstack(sb, splitlower, numlower, ofs, layers, splitlower);
+
 	err = PTR_ERR(oe);
 	if (IS_ERR(oe))
 		goto out_err;
@@ -2089,7 +2162,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	if (!ovl_force_readonly(ofs) && ofs->config.index) {
-		err = ovl_get_indexdir(sb, ofs, oe, &upperpath);
+		err = ovl_get_indexdir(sb, ofs, oe, &upperpath, splitlower);
 		if (err)
 			goto out_free_oe;
 
