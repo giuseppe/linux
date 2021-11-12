@@ -5,6 +5,8 @@
  * Copyright (C) 2016 Red Hat, Inc.
  */
 
+#include "lcfs-reader.h"
+
 struct ovl_config {
 	char *lowerdir;
 	char *upperdir;
@@ -20,6 +22,10 @@ struct ovl_config {
 	bool metacopy;
 	bool userxattr;
 	bool ovl_volatile;
+
+	/* compose.  */
+	char *descriptor_path;
+	char *base_path;
 };
 
 struct ovl_sb {
@@ -83,6 +89,8 @@ struct ovl_fs {
 	struct dentry *whiteout;
 	/* r/o snapshot of upperdir sb's only taken on volatile mounts */
 	errseq_t errseq;
+
+	struct dentry *descriptor_de;
 };
 
 static inline struct vfsmount *ovl_upper_mnt(struct ovl_fs *ofs)
