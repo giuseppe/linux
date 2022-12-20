@@ -1719,16 +1719,31 @@ static const struct file_operations proc_pid_set_comm_operations = {
 	.release	= single_release,
 };
 
+static bool is_restrict_self_exe_blocked(struct task_struct *task)
+{
+	if (!task_restrict_self_exe(task))
+		return false;
+	if (!ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS))
+		return true;
+	if (!checkpoint_restore_ns_capable(&init_user_ns))
+		return true;
+	return same_thread_group(current, task);
+}
+
 static int proc_exe_link(struct dentry *dentry, struct path *exe_path)
 {
 	struct task_struct *task;
 	struct file *exe_file;
+	bool restrict_self_exe;
 
 	task = get_proc_task(d_inode(dentry));
 	if (!task)
 		return -ENOENT;
 	exe_file = get_task_exe_file(task);
+	restrict_self_exe = is_restrict_self_exe_blocked(task);
 	put_task_struct(task);
+	if (restrict_self_exe)
+		return -EPERM;
 	if (exe_file) {
 		*exe_path = exe_file->f_path;
 		path_get(&exe_file->f_path);
