@@ -2261,7 +2261,19 @@ proc_map_files_get_link(struct dentry *dentry,
 			struct inode *inode,
 		        struct delayed_call *done)
 {
+	struct task_struct *task;
+	bool restrict_self_exe;
+
 	if (!checkpoint_restore_ns_capable(&init_user_ns))
+		return ERR_PTR(-EPERM);
+
+	task = get_proc_task(d_inode(dentry));
+	if (!task)
+		return ERR_PTR(-ENOENT);
+	restrict_self_exe = is_restrict_self_exe_blocked(task);
+	put_task_struct(task);
+
+	if (restrict_self_exe)
 		return ERR_PTR(-EPERM);
 
 	return proc_pid_get_link(dentry, inode, done);
