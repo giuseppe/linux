@@ -2408,6 +2408,10 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			error = -EINVAL;
 			break;
 		}
+		if (task_restrict_self_exe(me) && arg2 != SUID_DUMP_DISABLE) {
+			error = -EPERM;
+			break;
+		}
 		set_dumpable(me->mm, arg2);
 		break;
 
