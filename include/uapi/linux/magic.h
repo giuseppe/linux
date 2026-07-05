@@ -105,5 +105,6 @@
 #define PID_FS_MAGIC		0x50494446	/* "PIDF" */
 #define GUEST_MEMFD_MAGIC	0x474d454d	/* "GMEM" */
 #define NULL_FS_MAGIC		0x4E554C4C	/* "NULL" */
+#define MNTFS_MAGIC		0x4d4e5446	/* "MNTF" */
 
 #endif /* __LINUX_MAGIC_H__ */
