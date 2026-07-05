@@ -11,6 +11,7 @@
  * open_by_handle_at.
  */
 
+#include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/magic.h>
 #include <linux/mount.h>
@@ -19,6 +20,7 @@
 #include <linux/exportfs.h>
 #include <linux/seq_file.h>
 #include <linux/unaligned.h>
+#include <uapi/linux/mntfs.h>
 
 #include "mount.h"
 #include "internal.h"
@@ -34,6 +36,45 @@ void mntfs_get_root(struct path *path)
 
 #define MNTFS_FID_LEN_U32 (sizeof(u64) / sizeof(u32))
 #define FILEID_MNTFS 0x4d
+
+static long mntfs_ioctl(struct file *filp, unsigned int ioctl,
+			unsigned long arg)
+{
+	struct mount *mnt = file_inode(filp)->i_private;
+	struct path root;
+	struct file *f;
+	int fd;
+
+	switch (ioctl) {
+	case MNTFS_IOC_OPEN_MOUNT_ROOT:
+		root.mnt = &mnt->mnt;
+		root.dentry = mnt->mnt.mnt_root;
+		path_get(&root);
+
+		fd = get_unused_fd_flags(O_CLOEXEC);
+		if (fd < 0) {
+			path_put(&root);
+			return fd;
+		}
+
+		f = dentry_open(&root, O_PATH | O_NOFOLLOW, current_cred());
+		path_put(&root);
+		if (IS_ERR(f)) {
+			put_unused_fd(fd);
+			return PTR_ERR(f);
+		}
+
+		fd_install(fd, f);
+		return fd;
+	default:
+		return -ENOTTY;
+	}
+}
+
+static const struct file_operations mntfs_file_operations = {
+	.unlocked_ioctl = mntfs_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
+};
 
 static char *mntfs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
@@ -78,6 +119,7 @@ static int mntfs_init_inode(struct inode *inode, void *data)
 
 	inode->i_private = data;
 	inode->i_mode |= S_IRUGO;
+	inode->i_fop = &mntfs_file_operations;
 	inode->i_ino = mnt->mnt_id_unique;
 	return 0;
 }
@@ -131,8 +173,10 @@ static struct dentry *mntfs_fh_to_dentry(struct super_block *sb,
 
 	rcu_read_lock();
 	mnt = xa_load(&mnt_id_unique_xa, mnt_id_unique);
-	if (mnt)
+	if (mnt && !(mnt->mnt.mnt_flags & MNT_DOOMED))
 		mntget(&mnt->mnt);
+	else
+		mnt = NULL;
 	rcu_read_unlock();
 
 	if (!mnt)
