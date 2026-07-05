@@ -102,6 +102,7 @@ struct mount {
 	struct hlist_head mnt_stuck_children;
 	struct hlist_node mnt_ns_visible; /* link in ns->mnt_visible_mounts */
 	struct mount *overmount;	/* mounted on ->mnt_root */
+	struct dentry *mnt_stashed;	/* mntfs dentry (path_from_stashed) */
 } __randomize_layout;
 
 enum {
