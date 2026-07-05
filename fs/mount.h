@@ -7,6 +7,7 @@
 
 extern struct file_system_type nullfs_fs_type;
 extern struct list_head notify_list;
+extern struct xarray mnt_id_unique_xa;
 
 struct mnt_namespace {
 	struct ns_common	ns;

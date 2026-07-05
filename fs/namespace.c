@@ -71,6 +71,7 @@ __setup("initramfs_options=", initramfs_options_setup);
 
 static u64 event;
 static DEFINE_XARRAY_FLAGS(mnt_id_xa, XA_FLAGS_ALLOC);
+DEFINE_XARRAY(mnt_id_unique_xa);
 static DEFINE_IDA(mnt_group_ida);
 
 /* Don't allow confusion with old 32bit mount ID */
@@ -219,11 +220,14 @@ static int mnt_alloc_id(struct mount *mnt)
 	if (!res)
 		mnt->mnt_id_unique = ++mnt_id_ctr;
 	xa_unlock(&mnt_id_xa);
+	if (!res)
+		xa_store(&mnt_id_unique_xa, mnt->mnt_id_unique, mnt, GFP_KERNEL);
 	return res;
 }
 
 static void mnt_free_id(struct mount *mnt)
 {
+	xa_erase(&mnt_id_unique_xa, mnt->mnt_id_unique);
 	xa_erase(&mnt_id_xa, mnt->mnt_id);
 }
 
