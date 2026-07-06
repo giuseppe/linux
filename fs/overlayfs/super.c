@@ -1093,19 +1093,28 @@ static int ovl_get_layers(struct super_block *sb, struct ovl_fs *ofs,
 			}
 		}
 
-		mnt = clone_private_mount(&l->path);
-		err = PTR_ERR(mnt);
-		if (IS_ERR(mnt)) {
-			pr_err("failed to clone lowerpath\n");
-			iput(trap);
-			return err;
-		}
-
 		/*
 		 * Make lower layers R/O.  That way fchmod/fchown on lower file
 		 * will fail instead of modifying lower fs.
+		 *
+		 * When the lower superblock is already read-only, there is
+		 * no need to clone the mount just to add MNT_READONLY -
+		 * write operations will fail regardless.  Reuse the
+		 * existing mount so that its mount ID is preserved for
+		 * userspace tools that track mounts by mnt_id_unique.
 		 */
-		mnt->mnt_flags |= MNT_READONLY | MNT_NOATIME;
+		if (sb_rdonly(l->path.mnt->mnt_sb)) {
+			mnt = mntget(l->path.mnt);
+		} else {
+			mnt = clone_private_mount(&l->path);
+			err = PTR_ERR(mnt);
+			if (IS_ERR(mnt)) {
+				pr_err("failed to clone lowerpath\n");
+				iput(trap);
+				return err;
+			}
+			mnt->mnt_flags |= MNT_READONLY | MNT_NOATIME;
+		}
 
 		layers[ofs->numlayer].trap = trap;
 		layers[ofs->numlayer].mnt = mnt;
