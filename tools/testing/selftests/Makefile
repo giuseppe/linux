@@ -66,6 +66,7 @@ TARGETS += membarrier
 TARGETS += memfd
 TARGETS += memory-hotplug
 TARGETS += mincore
+TARGETS += mntfs
 TARGETS += mount
 TARGETS += mount_setattr
 TARGETS += move_mount_set_group
