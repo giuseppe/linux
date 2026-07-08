@@ -1568,6 +1568,72 @@ out_err:
 	return err;
 }
 
+static long ovl_ioctl_open_layer(struct file *filp, unsigned long arg)
+{
+	struct super_block *sb = file_inode(filp)->i_sb;
+	struct ovl_fs *ofs = OVL_FS(sb);
+	struct path root;
+	struct file *f;
+	int fd;
+
+	if (arg >= ofs->numlayer)
+		return -ENOENT;
+	if (arg == 0 && !ovl_upper_mnt(ofs))
+		return -ENOENT;
+
+	root.mnt = mntget(ofs->layers[arg].mnt);
+	root.dentry = dget(root.mnt->mnt_root);
+
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) {
+		path_put(&root);
+		return fd;
+	}
+
+	f = open_detached_copy_internal(&root);
+	path_put(&root);
+	if (IS_ERR(f)) {
+		put_unused_fd(fd);
+		return PTR_ERR(f);
+	}
+
+	fd_install(fd, f);
+	return fd;
+}
+
+static long ovl_ioctl_get_layers_info(struct file *filp, unsigned long arg)
+{
+	struct super_block *sb = file_inode(filp)->i_sb;
+	struct ovl_fs *ofs = OVL_FS(sb);
+	struct ovl_layers_info info = {
+		.numlower = ofs->numlayer - 1,
+		.numlowerdata = ofs->numdatalayer,
+		.flags = ovl_upper_mnt(ofs) ? OVL_LAYERS_HAS_UPPER : 0,
+	};
+
+	if (copy_to_user((void __user *)arg, &info, sizeof(info)))
+		return -EFAULT;
+
+	return 0;
+}
+
+long ovl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct ovl_fs *ofs = OVL_FS(file_inode(filp)->i_sb);
+
+	if (!ns_capable(ofs->creator_cred->user_ns, CAP_SYS_ADMIN))
+		return -EPERM;
+
+	switch (cmd) {
+	case OVL_IOC_OPEN_LAYER:
+		return ovl_ioctl_open_layer(filp, arg);
+	case OVL_IOC_GET_LAYERS_INFO:
+		return ovl_ioctl_get_layers_info(filp, arg);
+	default:
+		return -ENOTTY;
+	}
+}
+
 struct file_system_type ovl_fs_type = {
 	.owner			= THIS_MODULE,
 	.name			= "overlay",
