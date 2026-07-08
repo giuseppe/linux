@@ -527,12 +527,8 @@ static int erofs_fc_parse_param(struct fs_context *fc,
 			set_opt(&sbi->opt, INODE_SHARE);
 		break;
 	case Opt_source_fd:
-		if (!IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE)) {
-			errorfc(fc, "source fd option not supported");
-			return -EINVAL;
-		}
 		if (sbi->dif0.file)
-			fput(sbi->dif0.file);
+			return -EINVAL;
 		sbi->dif0.file = get_file(param->file);
 		break;
 	}
@@ -764,9 +760,9 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
+	struct file *file = sbi->dif0.file;
 
-	if (!IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) || !sbi->dif0.file) {
-		struct file *file;
+	if (!IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) || !file) {
 		int ret;
 
 		ret = get_tree_bdev_flags(fc, erofs_fc_fill_super,
@@ -783,10 +779,12 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 			return PTR_ERR(file);
 		sbi->dif0.file = file;
 	}
-	if (S_ISREG(file_inode(sbi->dif0.file)->i_mode) &&
-	    sbi->dif0.file->f_mapping->a_ops->read_folio)
-		return get_tree_nodev(fc, erofs_fc_fill_super);
-	return -EINVAL;
+	if (!S_ISREG(file_inode(file)->i_mode) ||
+	    !file->f_mapping->a_ops->read_folio) {
+		errorfc(fc, "source is unsupported");
+		return -EINVAL;
+	}
+	return get_tree_nodev(fc, erofs_fc_fill_super);
 }
 
 static int erofs_fc_reconfigure(struct fs_context *fc)
