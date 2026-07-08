@@ -3091,6 +3091,52 @@ static struct file *open_detached_copy(struct path *path, unsigned int flags)
 	return file;
 }
 
+/**
+ * open_detached_copy_internal - clone a mount into a new anonymous namespace
+ * @path: path to the mount to clone
+ *
+ * Like open_detached_copy(), but operates on mounts that are not part of any
+ * visible mount namespace (e.g. MNT_NS_INTERNAL mounts created by
+ * clone_private_mount()).  Bypasses the may_copy_tree() check, so the caller
+ * is responsible for verifying that the operation is permitted.
+ *
+ * Returns an O_PATH file with FMODE_NEED_UNMOUNT on success, or ERR_PTR on
+ * failure.
+ */
+struct file *open_detached_copy_internal(struct path *path)
+{
+	struct mnt_namespace *ns, *mnt_ns = current->nsproxy->mnt_ns;
+	struct mount *mnt;
+	struct file *file;
+
+	ns = alloc_mnt_ns(mnt_ns->user_ns, true);
+	if (IS_ERR(ns))
+		return ERR_CAST(ns);
+
+	guard(namespace_excl)();
+
+	mnt = clone_mnt(real_mount(path->mnt), path->dentry,
+			CL_COPY_MNT_NS_FILE);
+	if (IS_ERR(mnt)) {
+		free_mnt_ns(ns);
+		return ERR_CAST(mnt);
+	}
+
+	mnt_add_to_ns(ns, mnt);
+	ns->nr_mounts++;
+	ns->root = mnt;
+
+	mntput(path->mnt);
+	path->mnt = mntget(&mnt->mnt);
+	file = dentry_open(path, O_PATH, current_cred());
+	if (IS_ERR(file))
+		dissolve_on_fput(path->mnt);
+	else
+		file->f_mode |= FMODE_NEED_UNMOUNT;
+	return file;
+}
+EXPORT_SYMBOL_GPL(open_detached_copy_internal);
+
 enum mount_copy_flags_t {
 	MOUNT_COPY_RECURSIVE    = (1 << 0),
 	MOUNT_COPY_NEW		= (1 << 1),
