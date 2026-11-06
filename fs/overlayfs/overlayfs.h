@@ -80,6 +80,7 @@ enum {
 	OVL_REDIRECT_FOLLOW,	/* ...it translates to either "follow"	*/
 	OVL_REDIRECT_NOFOLLOW,	/* ...or "nofollow".			*/
 	OVL_REDIRECT_ON,
+	OVL_REDIRECT_FOLLOWDATA,	/* Only follow to data-only layers */
 };
 
 enum {
@@ -629,7 +630,13 @@ static inline char ovl_get_opaquedir_val(struct ovl_fs *ofs,
 
 static inline bool ovl_redirect_follow(struct ovl_fs *ofs)
 {
-	return ofs->config.redirect_mode != OVL_REDIRECT_NOFOLLOW;
+	return ofs->config.redirect_mode != OVL_REDIRECT_NOFOLLOW &&
+	       ofs->config.redirect_mode != OVL_REDIRECT_FOLLOWDATA;
+}
+
+static inline bool ovl_redirect_followdata(struct ovl_fs *ofs)
+{
+	return ofs->config.redirect_mode == OVL_REDIRECT_FOLLOWDATA;
 }
 
 static inline bool ovl_redirect_dir(struct ovl_fs *ofs)

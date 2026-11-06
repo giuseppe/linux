@@ -109,6 +109,7 @@ const struct constant_table ovl_parameter_redirect_dir[] = {
 	{ "follow",	OVL_REDIRECT_FOLLOW   },
 	{ "nofollow",	OVL_REDIRECT_NOFOLLOW },
 	{ "on",		OVL_REDIRECT_ON       },
+	{ "followdata",	OVL_REDIRECT_FOLLOWDATA },
 	{}
 };
 
@@ -988,10 +989,16 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 	}
 
 
-	/* Resolve userxattr -> !redirect && !metacopy dependency */
+	/*
+	 * Resolve userxattr -> !redirect && !metacopy dependency.
+	 * redirect_dir=followdata creates no redirects and follows only the
+	 * absolute redirects of lower metacopy files into data-only layers,
+	 * like a metacopy file in the last lower layer does without it.
+	 */
 	if (config->userxattr) {
 		if (set.redirect &&
-		    config->redirect_mode != OVL_REDIRECT_NOFOLLOW) {
+		    config->redirect_mode != OVL_REDIRECT_NOFOLLOW &&
+		    config->redirect_mode != OVL_REDIRECT_FOLLOWDATA) {
 			pr_err("conflicting options: userxattr,redirect_dir=%s\n",
 			       ovl_redirect_mode(config));
 			return -EINVAL;
@@ -1006,8 +1013,14 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 		 * options must be explicitly enabled if used together with
 		 * userxattr.
 		 */
-		config->redirect_mode = OVL_REDIRECT_NOFOLLOW;
+		if (config->redirect_mode != OVL_REDIRECT_FOLLOWDATA)
+			config->redirect_mode = OVL_REDIRECT_NOFOLLOW;
 		config->metacopy = false;
+	}
+
+	if (config->redirect_mode == OVL_REDIRECT_FOLLOWDATA && !ctx->nr_data) {
+		pr_err("redirect_dir=followdata requires a data-only layer\n");
+		return -EINVAL;
 	}
 
 	/*

@@ -1087,6 +1087,17 @@ struct ovl_lookup_ctx {
 	unsigned int ctr;
 };
 
+/*
+ * With redirect_dir=followdata, the absolute redirect of a lower metacopy
+ * file is followed only into the data-only layers.
+ */
+static bool ovl_is_followdata_redirect(struct ovl_lookup_ctx *ctx,
+				       struct ovl_lookup_data *d)
+{
+	return ovl_redirect_followdata(OVL_FS(d->sb)) && ctx->ctr &&
+	       d->metacopy && d->absolute_redirect;
+}
+
 static int ovl_lookup_layers(struct ovl_lookup_ctx *ctx, struct ovl_lookup_data *d)
 {
 	struct dentry *dentry = ctx->dentry;
@@ -1223,6 +1234,10 @@ static int ovl_lookup_layers(struct ovl_lookup_ctx *ctx, struct ovl_lookup_data 
 			ctx->stack[ctx->ctr].layer = lower.layer;
 			ctx->ctr++;
 		}
+
+		/* Lookup of lowerdata in the data-only layers only */
+		if (ovl_is_followdata_redirect(ctx, d))
+			d->stop = true;
 
 		if (d->stop)
 			break;

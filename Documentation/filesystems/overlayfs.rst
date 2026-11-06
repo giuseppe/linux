@@ -244,6 +244,10 @@ Mount options:
 - "redirect_dir=off":
     If "redirect_always_follow" is enabled in the kernel/module config,
     this "off" translates to "follow", otherwise it translates to "nofollow".
+- "redirect_dir=followdata":
+    Redirects are not created.  Only absolute redirects of metacopy files
+    in lower layers to data-only lower layers are followed (see
+    "Data-only lower layers" below).  Requires a data-only lower layer.
 
 When the NFS export feature is enabled, every copied up directory is
 indexed by the file handle of the lower inode and a file handle of the
@@ -418,8 +422,8 @@ pointed by REDIRECT. This should not be possible on local system as setting
 "trusted." xattrs will require CAP_SYS_ADMIN. But it should be possible
 for untrusted layers like from a pen drive.
 
-Note: redirect_dir={off|nofollow|follow[*]} and nfs_export=on mount options
-conflict with metacopy=on, and will result in an error.
+Note: redirect_dir={off|nofollow|follow[*]|followdata} and nfs_export=on
+mount options conflict with metacopy=on, and will result in an error.
 
 [*] redirect_dir=follow only conflicts with metacopy=on if upperdir=... is
 given.
@@ -464,6 +468,25 @@ In this case other forms of metacopy are rejected.  Note: this way, data-only
 layers may be used together with "userxattr", in which case careful attention
 must be given to privileges needed to change the "user.overlay.redirect" xattr
 to prevent misuse.
+
+Without "metacopy=on", only a metacopy file in the lowest of the lower layers
+that are not data-only may redirect to a data-only layer; lookup of such a
+metacopy file in any lower layer above it fails with EPERM.  Since "userxattr"
+cannot be used together with "metacopy=on" and "redirect_dir=on", stacking
+several lower layers of metacopy files over data-only layers needs the
+"redirect_dir=followdata" mount option.  For example::
+
+  mount -t overlay none -o userxattr,redirect_dir=followdata,\
+        lowerdir+=/l1,lowerdir+=/l2,lowerdir+=/l3,datadir+=/do1 /merged
+
+With "redirect_dir=followdata", a metacopy file in any lower layer that has
+an absolute redirect stops the lookup in the lower layers: the lower layers
+below it are not looked up, and the data is looked up only in the data-only
+layers.  As for a metacopy file in the lowest lower layer, the "verity" mount
+option decides whether a fs-verity digest is verified or required on open.
+Directory redirects, relative redirects, and metacopy files and redirects in
+the upper layer are rejected, as they are without this option.  Mounting with
+"redirect_dir=followdata" fails if there is no data-only layer.
 
 Since kernel version v6.8, "data-only" lower layers can also be added using
 the "datadir+" mount options and the fsconfig syscall from new mount api.
